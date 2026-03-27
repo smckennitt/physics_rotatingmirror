@@ -38,10 +38,7 @@
             gap: 20px;
             width: 100%;
         }
-        input[type=range] {
-            flex-grow: 1;
-            cursor: pointer;
-        }
+        input[type=range] { flex-grow: 1; cursor: pointer; }
         .freq-display {
             font-family: 'Courier New', monospace;
             font-size: 1.6rem;
@@ -63,7 +60,6 @@
             width: 320px;
             box-shadow: 0 4px 0 #b45309;
         }
-        #fireBtn:active { transform: translateY(2px); box-shadow: 0 2px 0 #b45309; }
         #fireBtn:disabled { background: #4b5563; color: #9ca3af; box-shadow: none; cursor: not-allowed; }
         #fireBtn.armed { background: #ef4444; color: white; animation: pulse 1s infinite; }
 
@@ -73,18 +69,30 @@
             100% { transform: scale(1); }
         }
 
-        .status-msg {
-            font-family: 'Courier New', monospace;
-            font-size: 1.1rem;
-            color: #94a3b8;
-            height: 1.5em;
-            text-align: center;
+        #mathModal {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: #1e293b;
+            padding: 30px;
+            border-radius: 16px;
+            border: 2px solid #10b981;
+            box-shadow: 0 0 50px rgba(0,0,0,0.8);
+            z-index: 100;
+            width: 450px;
         }
+        .modal-header { color: #10b981; font-size: 1.5rem; font-weight: bold; margin-bottom: 15px; }
+        .math-line { font-family: 'Courier New', monospace; margin: 10px 0; font-size: 1.1rem; }
+        .close-btn { margin-top: 20px; background: #334155; color: white; padding: 10px; border: none; border-radius: 6px; width: 100%; cursor: pointer; }
+
+        .status-msg { font-family: 'Courier New', monospace; font-size: 1.1rem; color: #94a3b8; height: 1.5em; text-align: center; }
     </style>
 </head>
 <body>
 
-    <h2 style="margin-bottom: 5px;">Michelson Speed of Light Rotating Mirror Experiment</h2>
+    <h2 style="margin-bottom: 5px;">Michelson Rotating Mirror - Speed of Light Lab</h2>
     <p style="color: #64748b; margin-top: 0;">Find the exact frequency for a photon of light</p>
     
     <canvas id="simCanvas" width="900" height="500"></canvas>
@@ -95,10 +103,19 @@
             <input type="range" id="freqSlider" min="500" max="800" value="580" step="1">
             <div class="freq-display"><span id="freqVal">580</span> Hz</div>
         </div>
-
         <button id="fireBtn">FIRE PHOTON</button>
-
         <div id="statusMsg" class="status-msg">Tune the mirror and fire! Target: 625 Hz</div>
+    </div>
+
+    <div id="mathModal">
+        <div class="modal-header">Success! Calculation Found:</div>
+        <div class="math-line"><b>Distance ($d$):</b> 30.0 km</div>
+        <div class="math-line"><b>Total Path ($2d$):</b> 60.0 km</div>
+        <div class="math-line"><b>Frequency ($f$):</b> 624.57 Hz</div>
+        <hr style="border: 0; border-top: 1px solid #334155; margin: 15px 0;">
+        <div class="math-line" style="color: #facc15; font-size: 1.3rem;">$c = 16 \times f \times d$</div>
+        <div class="math-line" style="color: #10b981; font-weight: bold;">Result: 299,796 km/s</div>
+        <button class="close-btn" onclick="closeModal()">Close & Continue</button>
     </div>
 
 <script>
@@ -108,176 +125,89 @@
     const freqVal = document.getElementById('freqVal');
     const fireBtn = document.getElementById('fireBtn');
     const statusMsg = document.getElementById('statusMsg');
+    const modal = document.getElementById('mathModal');
 
-    // Layout
+    // Audio Context Setup
+    let audioCtx = null;
+    function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+
+    function playSound(type) {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        if (type === 'success') {
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(600, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(900, audioCtx.currentTime + 0.1);
+            gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+        } else {
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+            osc.frequency.linearRampToValueAtTime(50, audioCtx.currentTime + 0.2);
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.2);
+        }
+    }
+
+    // Geometry & State
     const centerX = 200, centerY = 250, octRadius = 75;
     const distMirrorX = 850, distMirrorY = 250;
-    const posA = { x: centerX + 53, y: centerY - 53 }; 
-    const posB = { x: centerX + 53, y: centerY + 53 }; 
-
-    // State
-    let angle = 0;
-    let photon = null;
-    let fireQueued = false;
-    let currentFreq = 580;
+    const posA = { x: centerX + 53, y: centerY - 53 }, posB = { x: centerX + 53, y: centerY + 53 }; 
+    let angle = 0, photon = null, fireQueued = false, currentFreq = 580;
 
     function draw() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#64748b"; ctx.fillRect(distMirrorX, centerY - 80, 15, 160);
+        ctx.strokeStyle = "#475569"; ctx.lineWidth = 1; ctx.beginPath();
+        ctx.moveTo(centerX + 100, centerY); ctx.lineTo(distMirrorX - 20, centerY); ctx.stroke();
+        ctx.fillStyle = "#3b82f6"; ctx.font = "bold 16px Courier New"; ctx.fillText("30.0 km", (centerX + distMirrorX) / 2 - 35, centerY + 25);
+        ctx.font = "40px Arial"; ctx.fillText("🔦", posA.x - 25, 75); ctx.fillText("👁️", posB.x - 20, 460); 
 
-        // 1. Stationary Mirror
-        ctx.fillStyle = "#64748b";
-        ctx.fillRect(distMirrorX, centerY - 80, 15, 160);
-        ctx.fillStyle = "#94a3b8";
-        ctx.font = "14px Arial";
-        ctx.fillText("Stationary Mirror", distMirrorX - 110, centerY - 95);
-
-        // 2. THE 30.0 KM LABEL & DIMENSION LINE
-        ctx.strokeStyle = "#475569";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        // Line from octagon area to mirror area
-        ctx.moveTo(centerX + 100, centerY);
-        ctx.lineTo(distMirrorX - 20, centerY);
-        ctx.stroke();
-        // End Ticks
-        ctx.beginPath();
-        ctx.moveTo(centerX + 100, centerY - 5); ctx.lineTo(centerX + 100, centerY + 5);
-        ctx.moveTo(distMirrorX - 20, centerY - 5); ctx.lineTo(distMirrorX - 20, centerY + 5);
-        ctx.stroke();
-        // Label Text
-        ctx.fillStyle = "#3b82f6";
-        ctx.font = "bold 16px Courier New";
-        ctx.fillText("30.0 km", (centerX + distMirrorX) / 2 - 35, centerY + 25);
-
-        // 3. Equipment Icons
-        ctx.font = "40px Arial";
-        ctx.fillText("🔦", posA.x - 25, 75); 
-        ctx.fillText("👁️", posB.x - 20, 460); 
-
-        // 4. Rotating Octagon
-        ctx.save();
-        ctx.translate(centerX, centerY);
-        ctx.rotate(angle);
-        ctx.beginPath();
-        for (let i = 0; i < 8; i++) {
+        ctx.save(); ctx.translate(centerX, centerY); ctx.rotate(angle);
+        ctx.beginPath(); for (let i = 0; i < 8; i++) {
             const theta = (i * Math.PI / 4);
-            const px = octRadius * Math.cos(theta);
-            const py = octRadius * Math.sin(theta);
+            const px = octRadius * Math.cos(theta); const py = octRadius * Math.sin(theta);
             if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
         }
-        ctx.closePath();
-        ctx.fillStyle = "#1e293b";
-        ctx.fill();
-        ctx.strokeStyle = "#3b82f6";
-        ctx.lineWidth = 3;
-        ctx.stroke();
+        ctx.closePath(); ctx.fillStyle = "#1e293b"; ctx.fill(); ctx.strokeStyle = "#3b82f6"; ctx.lineWidth = 3; ctx.stroke();
+        ctx.rotate(Math.PI/8); ctx.fillStyle = "#ef4444"; ctx.font = "bold 26px Arial"; ctx.fillText("1", octRadius - 32, 10); ctx.restore();
 
-        // Red Tracker Face
-        ctx.rotate(Math.PI/8);
-        ctx.fillStyle = "#ef4444";
-        ctx.font = "bold 26px Arial";
-        ctx.fillText("1", octRadius - 32, 10);
-        ctx.restore();
-
-        // 5. Photon Animation
         if (photon) {
             const speed = 16;
-            ctx.beginPath();
-            ctx.fillStyle = "#facc15";
-
+            ctx.beginPath(); ctx.fillStyle = "#facc15";
             switch(photon.stage) {
-                case 'launch':
-                    photon.y += speed;
-                    if (photon.y >= posA.y) photon.stage = 'to-mountain';
-                    break;
-                case 'to-mountain':
-                    photon.x += speed;
-                    photon.y += (distMirrorY - posA.y) / ((distMirrorX - posA.x) / speed);
-                    if (photon.x >= distMirrorX) photon.stage = 'returning';
-                    break;
-                case 'returning':
-                    photon.x -= speed;
-                    photon.y += (posB.y - distMirrorY) / ((distMirrorX - posB.x) / speed);
+                case 'launch': photon.y += speed; if (photon.y >= posA.y) photon.stage = 'to-mountain'; break;
+                case 'to-mountain': photon.x += speed; photon.y += (distMirrorY - posA.y) / ((distMirrorX - posA.x) / speed); if (photon.x >= distMirrorX) photon.stage = 'returning'; break;
+                case 'returning': photon.x -= speed; photon.y += (posB.y - distMirrorY) / ((distMirrorX - posB.x) / speed);
                     if (photon.x <= posB.x) {
-                        // Success window: 625 Hz +/- 3
-                        const diff = currentFreq - 625;
-                        if (Math.abs(diff) <= 3) {
-                            photon.stage = 'success';
-                        } else {
-                            photon.stage = 'scatter';
-                            // Physics-based bounce: diff scales the scatter angle
-                            photon.vx = -speed * 0.9;
-                            photon.vy = speed * 0.5 + (diff * 0.2); 
-                        }
-                    }
-                    break;
-                case 'success':
-                    statusMsg.innerHTML = "Status: <span style='color:#10b981'>SUCCESS! Detected at " + currentFreq + " Hz</span>";
-                    ctx.fillStyle = "#10b981";
-                    photon.y += speed;
-                    if (photon.y >= 440) resetPhoton();
-                    break;
-                case 'scatter':
-                    const offType = (currentFreq > 625 ? "TOO FAST" : "TOO SLOW");
-                    statusMsg.innerHTML = "Status: <span style='color:#ef4444'>MISS (" + offType + ")</span>";
-                    ctx.fillStyle = "#ef4444";
-                    photon.x += photon.vx;
-                    photon.y += photon.vy;
-                    if (photon.x < -50 || photon.y < -50 || photon.y > 550) resetPhoton();
-                    break;
+                        if (Math.abs(currentFreq - 625) <= 3) { photon.stage = 'success'; playSound('success'); } 
+                        else { photon.stage = 'scatter'; photon.vx = -speed * 0.9; photon.vy = speed * 0.5 + (currentFreq - 625) * 0.2; playSound('fail'); }
+                    } break;
+                case 'success': ctx.fillStyle = "#10b981"; photon.y += speed; if (photon.y >= 440) { resetPhoton(); modal.style.display = 'block'; } break;
+                case 'scatter': ctx.fillStyle = "#ef4444"; photon.x += photon.vx; photon.y += photon.vy; if (photon.x < -50 || photon.y < -50 || photon.y > 550) resetPhoton(); break;
             }
-
-            if (photon) {
-                ctx.shadowBlur = 20;
-                ctx.shadowColor = ctx.fillStyle;
-                ctx.arc(photon.x, photon.y, 10, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.strokeStyle = "white";
-                ctx.lineWidth = 2;
-                ctx.stroke();
-                ctx.shadowBlur = 0;
-            }
+            if (photon) { ctx.shadowBlur = 20; ctx.shadowColor = ctx.fillStyle; ctx.arc(photon.x, photon.y, 10, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0; }
         }
     }
 
-    function resetPhoton() {
-        photon = null;
-        fireBtn.disabled = false;
-        fireBtn.classList.remove('armed');
-    }
-
+    function resetPhoton() { photon = null; fireBtn.disabled = false; fireBtn.classList.remove('armed'); }
+    function closeModal() { modal.style.display = 'none'; }
     function loop() {
         const lastMod = (angle % (Math.PI / 4));
-        // Visual rotation speed proportional to selected Hz
         angle += (currentFreq / 625) * 0.016;
         const currentMod = (angle % (Math.PI / 4));
-
-        // Auto-fire only when Face 1 is aligned after button click
-        if (fireQueued && !photon && lastMod > currentMod) {
-            photon = { x: posA.x, y: 75, stage: 'launch' };
-            fireQueued = false;
-            statusMsg.innerText = "Photon in flight...";
-        }
-
-        draw();
-        requestAnimationFrame(loop);
+        if (fireQueued && !photon && lastMod > currentMod) { photon = { x: posA.x, y: 75, stage: 'launch' }; fireQueued = false; }
+        draw(); requestAnimationFrame(loop);
     }
 
-    freqSlider.oninput = (e) => {
-        currentFreq = parseInt(e.target.value);
-        freqVal.innerText = currentFreq;
-        if (!photon) statusMsg.innerText = "Adjusting frequency... Current: " + currentFreq + " Hz";
-    };
-
-    fireBtn.onclick = () => {
-        if (!photon) {
-            fireQueued = true;
-            fireBtn.classList.add('armed');
-            fireBtn.disabled = true;
-            statusMsg.innerText = "Armed: Waiting for Face 1 alignment...";
-        }
-    };
-
+    freqSlider.oninput = (e) => { currentFreq = parseInt(e.target.value); freqVal.innerText = currentFreq; };
+    fireBtn.onclick = () => { initAudio(); if (!photon) { fireQueued = true; fireBtn.classList.add('armed'); fireBtn.disabled = true; } };
     loop();
 </script>
 </body>
